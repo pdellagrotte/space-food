@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Space Food</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #000;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      overflow: hidden;
+    }
+    canvas {
+      display: block;
+      border: 2px solid #ff4500;
+      box-shadow: 0 0 25px #ff4500, 0 0 60px #ff450033;
+    }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 600;
+canvas.width = W;
+canvas.height = H;
+
+// ── Constants ──────────────────────────────────────────────────────────────
+const ROWS = 3, COLS = 10;
+const MAX_WAVES = 5;
+const ENEMY_EMOJI  = ['🍕', '🌭', '🌮'];
+const ENEMY_PTS    = [30, 20, 10];
+const GAP_X = 65, GAP_Y = 52;
+const START_X = 75, START_Y = 72;
+
+// ── Stars (static background) ──────────────────────────────────────────────
+const stars = Array.from({ length: 130 }, () => ({
+  x: Math.random() * W,
+  y: Math.random() * H,
+  r: Math.random() * 1.4 + 0.3,
+  a: Math.random() * 0.6 + 0.3
+}));
+
+// ── State ──────────────────────────────────────────────────────────────────
+let state = 'start'; // 'start' | 'playing' | 'dead' | 'win'
+let score, lives, wave;
+let player, bullets, eBullets, enemies;
+let eDir, eMoveTimer, eMoveInterval, eSpeed, eDropY;
+let eShootTimer, eShootInterval;
+let frame = 0;
+
+// ── Init ───────────────────────────────────────────────────────────────────
+function initGame() {
+  score = 0; lives = 3; wave = 1;
+  initWave();
+}
+
+function initWave() {
+  player = { x: W / 2, y: H - 55, w: 48, h: 48, cool: 0, inv: 0 };
+  bullets  = [];
+  eBullets = [];
+  spawnEnemies();
+
+  const f = 1 + (wave - 1) * 0.45;
+  eDir         = 1;
+  eSpeed       = 7 * f;
+  eDropY       = 14;
+  eMoveInterval = Math.max(6, Math.floor(40 / f));
+  eShootInterval = Math.max(22, 80 - wave * 9);
+  eMoveTimer   = 0;
+  eShootTimer  = 0;
+}
+
+function spawnEnemies() {
+  enemies = [];
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++)
+      enemies.push({ x: START_X + c * GAP_X, y: START_Y + r * GAP_Y,
+                     w: 40, h: 40, emoji: ENEMY_EMOJI[r], pts: ENEMY_PTS[r] * wave,
+                     alive: true, r, c });
+}
+
+// ── Input ──────────────────────────────────────────────────────────────────
+const keys = {};
+document.addEventListener('keydown', e => {
+  if (['Space','ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.code))
+    e.preventDefault();
+  keys[e.code] = true;
+
+  if (e.code === 'Space' || e.code === 'Enter') {
+    if (state !== 'playing') { initGame(); state = 'playing'; return; }
+    if (e.code === 'Space') tryShoot();
+  }
+});
+document.addEventListener('keyup', e => { keys[e.code] = false; });
+
+// ── Shooting ───────────────────────────────────────────────────────────────
+function tryShoot() {
+  if (player.cool > 0) return;
+  bullets.push({ x: player.x, y: player.y - 26, w: 6, h: 20, dead: false });
+  player.cool = 13;
+}
+
+function enemyFire() {
+  const cols = {};
+  enemies.forEach(e => {
+    if (!e.alive) return;
+    if (cols[e.c] === undefined || e.r > cols[e.c].r) cols[e.c] = e;
+  });
+  const pool = Object.values(cols);
+  if (!pool.length) return;
+  const s = pool[Math.floor(Math.random() * pool.length)];
+  const spd = 3.5 + wave * 0.45;
+  eBullets.push({ x: s.x, y: s.y + 22, r: 7, spd, dead: false });
+}
+
+// ── Collision helpers ──────────────────────────────────────────────────────
+function boxBox(ax, ay, aw, ah, bx, by, bw, bh) {
+  return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+}
+function circleBox(cx, cy, cr, bx, by, bw, bh) {
+  const nearX = Math.max(bx, Math.min(cx, bx + bw));
+  const nearY = Math.max(by, Math.min(cy, by + bh));
+  const dx = cx - nearX, dy = cy - nearY;
+  return dx * dx + dy * dy < cr * cr;
+}
+
+// ── Update ─────────────────────────────────────────────────────────────────
+function update() {
+  if (state !== 'playing') return;
+  frame++;
+
+  // Player move
+  const dx = (keys['ArrowRight'] || keys['KeyD'] ? 1 : 0) -
+             (keys['ArrowLeft']  || keys['KeyA'] ? 1 : 0);
+  player.x = Math.max(player.w / 2, Math.min(W - player.w / 2, player.x + dx * 5));
+  if (player.cool > 0) player.cool--;
+  if (player.inv  > 0) player.inv--;
+  if (keys['Space']) tryShoot();
+
+  // Player bullets
+  bullets.forEach(b => { b.y -= 12; });
+
+  // Enemy bullets
+  eBullets.forEach(b => { b.y += b.spd; });
+
+  // Enemy group march
+  eMoveTimer++;
+  if (eMoveTimer >= eMoveInterval) {
+    eMoveTimer = 0;
+    const alive = enemies.filter(e => e.alive);
+    if (!alive.length) return;
+    alive.forEach(e => e.x += eDir * eSpeed);
+
+    const minX = Math.min(...alive.map(e => e.x - e.w / 2));
+    const maxX = Math.max(...alive.map(e => e.x + e.w / 2));
+    if (maxX >= W - 8 || minX <= 8) {
+      eDir *= -1;
+      alive.forEach(e => { e.x += eDir * eSpeed * 1.8; e.y += eDropY; });
+    }
+  }
+
+  // Enemy shooting
+  eShootTimer++;
+  if (eShootTimer >= eShootInterval) { eShootTimer = 0; enemyFire(); }
+
+  // Player bullet ↔ enemy
+  bullets.forEach(b => {
+    if (b.dead) return;
+    enemies.forEach(e => {
+      if (!e.alive || b.dead) return;
+      if (boxBox(b.x - b.w / 2, b.y - b.h, b.w, b.h,
+                 e.x - e.w / 2, e.y - e.h / 2, e.w, e.h)) {
+        b.dead = true;
+        e.alive = false;
+        spawnBurst(e.x, e.y, e.emoji);
+        score += e.pts;
+      }
+    });
+  });
+  bullets  = bullets.filter(b => !b.dead && b.y + b.h > 0);
+
+  // Enemy bullet ↔ player
+  if (player.inv <= 0) {
+    eBullets.forEach(b => {
+      if (b.dead) return;
+      if (circleBox(b.x, b.y, b.r,
+                    player.x - player.w / 2, player.y - player.h / 2,
+                    player.w, player.h)) {
+        b.dead = true;
+        lives--;
+        player.inv = 160;
+        if (lives <= 0) state = 'dead';
+      }
+    });
+  }
+  eBullets = eBullets.filter(b => !b.dead && b.y - b.r < H);
+
+  // Enemy reaches ground
+  enemies.forEach(e => {
+    if (e.alive && e.y + e.h / 2 > player.y - 8) state = 'dead';
+  });
+
+  // Wave cleared
+  if (enemies.every(e => !e.alive)) {
+    if (wave >= MAX_WAVES) { state = 'win'; }
+    else { wave++; initWave(); }
+  }
+
+  // Particles
+  updateParticles();
+}
+
+// ── Particles ──────────────────────────────────────────────────────────────
+const particles = [];
+function spawnBurst(x, y, emoji) {
+  for (let i = 0; i < 6; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const spd   = Math.random() * 3 + 1;
+    particles.push({ x, y, vx: Math.cos(angle) * spd, vy: Math.sin(angle) * spd,
+                     life: 40, maxLife: 40, emoji, size: 18 + Math.random() * 10 });
+  }
+}
+function updateParticles() {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy; p.vy += 0.1; p.life--;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+}
+
+// ── Draw helpers ───────────────────────────────────────────────────────────
+function emoji(e, x, y, sz) {
+  ctx.save();
+  ctx.font = `${sz}px serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(e, x, y);
+  ctx.restore();
+}
+
+function text(t, x, y, sz, color, align = 'center') {
+  ctx.save();
+  ctx.font = `${sz}px "Courier New", monospace`;
+  ctx.fillStyle = color;
+  ctx.textAlign = align;
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText(t, x, y);
+  ctx.restore();
+}
+
+function boldText(t, x, y, sz, color, align = 'center') {
+  ctx.save();
+  ctx.font = `bold ${sz}px "Courier New", monospace`;
+  ctx.fillStyle = color;
+  ctx.textAlign = align;
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText(t, x, y);
+  ctx.restore();
+}
+
+function glowText(t, x, y, sz, color, glow) {
+  ctx.save();
+  ctx.shadowColor = glow;
+  ctx.shadowBlur = 18;
+  ctx.font = `bold ${sz}px "Courier New", monospace`;
+  ctx.fillStyle = color;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText(t, x, y);
+  ctx.restore();
+}
+
+function drawStars() {
+  stars.forEach(s => {
+    ctx.globalAlpha = s.a;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+}
+
+// ── HUD ────────────────────────────────────────────────────────────────────
+function drawHUD() {
+  boldText(`SCORE: ${score}`, 14, 28, 17, '#ffdd57', 'left');
+  boldText(`WAVE ${wave}/${MAX_WAVES}`, W / 2, 28, 17, '#ff6b6b');
+
+  // Lives as burger emoji
+  for (let i = 0; i < 3; i++) {
+    ctx.globalAlpha = i < lives ? 1 : 0.15;
+    emoji('🍔', W - 18 - i * 28, 22, 22);
+  }
+  ctx.globalAlpha = 1;
+
+  // Divider
+  ctx.strokeStyle = '#ff450030';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, 38); ctx.lineTo(W, 38); ctx.stroke();
+
+  // Ground
+  ctx.strokeStyle = '#ff450050';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(0, H - 28); ctx.lineTo(W, H - 28); ctx.stroke();
+}
+
+// ── Game entities ──────────────────────────────────────────────────────────
+function drawPlayer() {
+  if (player.inv > 0 && Math.floor(frame / 5) % 2 === 0) return;
+  emoji('🍔', player.x, player.y, 42);
+}
+
+function drawBullets() {
+  // Player bullets — golden fry rods
+  bullets.forEach(b => {
+    const grd = ctx.createLinearGradient(b.x, b.y - b.h, b.x, b.y);
+    grd.addColorStop(0, '#ffe066');
+    grd.addColorStop(1, '#e07800');
+    ctx.fillStyle = grd;
+    ctx.beginPath();
+    ctx.roundRect
+      ? ctx.roundRect(b.x - b.w / 2, b.y - b.h, b.w, b.h, 3)
+      : ctx.rect(b.x - b.w / 2, b.y - b.h, b.w, b.h);
+    ctx.fill();
+  });
+
+  // Enemy bullets — ketchup drops
+  eBullets.forEach(b => {
+    // Teardrop body
+    ctx.save();
+    ctx.translate(b.x, b.y);
+    const grd = ctx.createRadialGradient(-b.r * 0.3, -b.r * 0.3, 0, 0, 0, b.r);
+    grd.addColorStop(0, '#ff8888');
+    grd.addColorStop(1, '#aa0000');
+    ctx.fillStyle = grd;
+    ctx.beginPath();
+    ctx.arc(0, 0, b.r, 0, Math.PI * 2);
+    ctx.fill();
+    // Drip tip
+    ctx.beginPath();
+    ctx.moveTo(-b.r * 0.45, 0);
+    ctx.lineTo(0, -b.r * 1.8);
+    ctx.lineTo(b.r * 0.45, 0);
+    ctx.closePath();
+    ctx.fillStyle = '#cc1111';
+    ctx.fill();
+    ctx.restore();
+  });
+}
+
+function drawEnemies() {
+  enemies.forEach(e => { if (e.alive) emoji(e.emoji, e.x, e.y, 34); });
+}
+
+function drawParticles() {
+  particles.forEach(p => {
+    ctx.globalAlpha = p.life / p.maxLife;
+    emoji(p.emoji, p.x, p.y, p.size * (p.life / p.maxLife));
+  });
+  ctx.globalAlpha = 1;
+}
+
+// ── Screens ────────────────────────────────────────────────────────────────
+function drawStart() {
+  glowText('SPACE FOOD', W / 2, 120, 68, '#ff4500', '#ff4500');
+
+  ctx.save();
+  ctx.font = '20px "Courier New"';
+  ctx.fillStyle = '#ffdd57';
+  ctx.textAlign = 'center';
+  ctx.fillText('A Delicious Invasion', W / 2, 153);
+  ctx.restore();
+
+  emoji('🍔', W / 2, 220, 60);
+
+  text('DEFEND AGAINST:', W / 2, 285, 15, '#999');
+
+  const eY = 320;
+  [-100, 0, 100].forEach((off, i) => {
+    emoji(ENEMY_EMOJI[i], W / 2 + off, eY, 34);
+    text(`${ENEMY_PTS[i]}×wave pts`, W / 2 + off, eY + 28, 12, '#888');
+  });
+
+  text('← →  or  A D    Move', W / 2, 390, 15, '#bbb');
+  text('SPACE              Shoot', W / 2, 412, 15, '#bbb');
+
+  if (Math.floor(frame / 28) % 2 === 0) {
+    boldText('PRESS SPACE OR ENTER', W / 2, 470, 20, '#ff6b6b');
+  }
+
+  text(`${MAX_WAVES} waves of increasingly hangry enemies await…`, W / 2, 530, 13, '#444');
+}
+
+function drawDimOverlay() {
+  ctx.fillStyle = 'rgba(3,3,18,0.85)';
+  ctx.fillRect(0, 0, W, H);
+}
+
+function drawGameOver() {
+  drawDimOverlay();
+  emoji('💀', W / 2, 165, 76);
+  glowText('GAME OVER', W / 2, 272, 58, '#ff4444', '#ff0000');
+  boldText(`SCORE: ${score}`, W / 2, 320, 26, '#ffdd57');
+  text(`Reached wave ${wave} of ${MAX_WAVES}`, W / 2, 358, 18, '#888');
+  if (Math.floor(frame / 28) % 2 === 0)
+    boldText('PRESS SPACE OR ENTER TO RETRY', W / 2, 430, 18, '#ff6b6b');
+}
+
+function drawWin() {
+  drawDimOverlay();
+  emoji('🏆', W / 2, 155, 76);
+  glowText('YOU WIN!', W / 2, 265, 62, '#ffdd57', '#ffaa00');
+  text('The food invasion has been defeated!', W / 2, 308, 18, '#aaa');
+  boldText(`FINAL SCORE: ${score}`, W / 2, 350, 26, '#ffdd57');
+
+  ctx.save();
+  ctx.font = '36px serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('🎉  🍔  🎉', W / 2, 405);
+  ctx.restore();
+
+  if (Math.floor(frame / 28) % 2 === 0)
+    boldText('PRESS SPACE OR ENTER TO PLAY AGAIN', W / 2, 470, 18, '#ff6b6b');
+}
+
+// ── Main render ────────────────────────────────────────────────────────────
+function draw() {
+  ctx.fillStyle = '#050510';
+  ctx.fillRect(0, 0, W, H);
+  drawStars();
+
+  if (state === 'start') { drawStart(); return; }
+
+  drawEnemies();
+  drawParticles();
+  drawBullets();
+  drawPlayer();
+  drawHUD();
+
+  if (state === 'dead') drawGameOver();
+  else if (state === 'win') drawWin();
+}
+
+// ── Loop ───────────────────────────────────────────────────────────────────
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
