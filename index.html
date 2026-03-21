@@ -32,7 +32,7 @@ canvas.height = H;
 // ── Constants ──────────────────────────────────────────────────────────────
 const ROWS = 3, COLS = 10;
 const MAX_WAVES = 5;
-const ENEMY_EMOJI  = ['🍕', '🌭', '🌮'];
+const ENEMY_EMOJI  = ['🍦', '🧆', '🥪'];
 const ENEMY_PTS    = [30, 20, 10];
 const GAP_X = 65, GAP_Y = 52;
 const START_X = 75, START_Y = 72;
@@ -383,7 +383,7 @@ function drawStart() {
   const eY = 320;
   [-100, 0, 100].forEach((off, i) => {
     emoji(ENEMY_EMOJI[i], W / 2 + off, eY, 34);
-    text(`${ENEMY_PTS[i]}×wave pts`, W / 2 + off, eY + 28, 12, '#888');
+    text(`${ENEMY_PTS[i]}×wave`, W / 2 + off, eY + 28, 12, '#888');
   });
 
   text('← →  or  A D    Move', W / 2, 390, 15, '#bbb');
