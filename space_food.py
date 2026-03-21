@@ -41,6 +41,15 @@ PARTICLE_GRAVITY = 0.1
 
 NUM_STARS = 130
 
+# ── Boss ────────────────────────────────────────────────────────────────────
+BOSS_EMOJI           = '🛸'
+BOSS_HP              = 3
+BOSS_SPEED           = 3.0
+BOSS_SHOOT_INTERVAL  = 20    # frames between shots (~3× faster than wave-1 enemies)
+BOSS_BULLET_SPEED    = 6.0
+BOSS_POINTS          = 500   # × wave
+BOSS_SPAWN_FRAME     = 600   # 10 seconds at 60 fps
+
 # ── Colors ─────────────────────────────────────────────────────────────────
 BG        = (  5,   5,  16)
 WHITE     = (255, 255, 255)
@@ -236,6 +245,46 @@ class Bullet:
                                 [(int(p[0]), int(p[1])) for p in pts])
 
 
+class Boss:
+    W, H = 56, 56
+
+    def __init__(self, wave: int):
+        self.x          = W // 2
+        self.y          = 52
+        self.hp         = BOSS_HP
+        self.dir        = 1
+        self.shoot_timer = 0
+        self.alive      = True
+        self.pts        = BOSS_POINTS * wave
+        self.hit_flash  = 0   # frames to show hit highlight
+
+    def update(self, bullets: list) -> None:
+        self.x += self.dir * BOSS_SPEED
+        if self.x + self.W // 2 >= W - 8:
+            self.dir = -1
+        elif self.x - self.W // 2 <= 8:
+            self.dir = 1
+
+        self.shoot_timer += 1
+        if self.shoot_timer >= BOSS_SHOOT_INTERVAL:
+            self.shoot_timer = 0
+            bullets.append(Bullet(self.x, self.y + 30, BOSS_BULLET_SPEED, 'enemy'))
+
+        if self.hit_flash > 0:
+            self.hit_flash -= 1
+
+    def draw(self, screen: pygame.Surface) -> None:
+        # Red ring on hit
+        if self.hit_flash > 0:
+            pygame.draw.circle(screen, (255, 80, 80),
+                               (int(self.x), int(self.y)), self.W // 2 + 4, 3)
+        blit_emoji(screen, BOSS_EMOJI, 52, self.x, self.y)
+        # HP pips below boss
+        for i in range(BOSS_HP):
+            color = (255, 60, 60) if i < self.hp else (50, 50, 50)
+            pygame.draw.circle(screen, color, (int(self.x) - 16 + i * 16, self.y + 34), 5)
+
+
 class Particle:
     def __init__(self, x, y, emoji):
         angle = random.uniform(0, math.tau)
@@ -273,7 +322,7 @@ class Game:
         self._prewarm_cache()
 
     def _prewarm_cache(self):
-        for e in ENEMY_EMOJIS + [PLAYER_EMOJI, '🏆', '💀', '🎉']:
+        for e in ENEMY_EMOJIS + [PLAYER_EMOJI, BOSS_EMOJI, '🏆', '💀', '🎉']:
             for sz in (22, 34, 42, 52, 60, 76):
                 get_emoji_surf(e, sz)
 
@@ -300,6 +349,10 @@ class Game:
         self.enemy_bullet_speed  = ENEMY_BULLET_BASE + self.wave * ENEMY_BULLET_WAVE
         self.move_timer          = 0
         self.shoot_timer         = 0
+        self.wave_frame          = 0
+        self.boss: Boss | None   = None
+        self.boss_spawned        = False
+        self.boss_announce       = 0   # countdown frames for "BOSS!" banner
 
     def _spawn_enemies(self):
         self.enemies = []
@@ -333,11 +386,24 @@ class Game:
     # ── Update ────────────────────────────────────────────────────────────
 
     def update(self):
-        self.frame += 1
+        self.frame      += 1
+        self.wave_frame += 1
         keys = pygame.key.get_pressed()
         self.player.update(keys)
         if keys[pygame.K_SPACE]:
             self._try_shoot()
+
+        # Spawn boss once per wave after 10 seconds
+        if not self.boss_spawned and self.wave_frame >= BOSS_SPAWN_FRAME:
+            self.boss_spawned = True
+            self.boss         = Boss(self.wave)
+            self.boss_announce = 120   # show banner for 2 seconds
+
+        if self.boss_announce > 0:
+            self.boss_announce -= 1
+
+        if self.boss and self.boss.alive:
+            self.boss.update(self.bullets)
 
         self._move_bullets()
         self._move_enemies()
@@ -416,6 +482,21 @@ class Game:
                         self._spawn_burst(e.x, e.y, e.emoji)
                         break
 
+                # Boss hit (only if bullet wasn't already consumed)
+                if b.alive and self.boss and self.boss.alive:
+                    boss = self.boss
+                    bsx  = boss.x - boss.W // 2
+                    bsy  = boss.y - boss.H // 2
+                    if bx < bsx + boss.W and bx + BULLET_W > bsx \
+                            and by < bsy + boss.H and by + BULLET_H > bsy:
+                        b.alive         = False
+                        boss.hp        -= 1
+                        boss.hit_flash  = 10
+                        if boss.hp <= 0:
+                            boss.alive   = False
+                            self.score  += boss.pts
+                            self._spawn_burst(boss.x, boss.y, BOSS_EMOJI)
+
             else:  # enemy bullet
                 if p.inv > 0:
                     continue
@@ -464,6 +545,10 @@ class Game:
             pygame.display.flip()
             return
 
+        # Boss
+        if self.boss and self.boss.alive:
+            self.boss.draw(screen)
+
         # Enemies
         for e in self.enemies:
             if e.alive:
@@ -505,6 +590,13 @@ class Game:
         pygame.draw.line(screen, (255, 69, 0, 48), (0, 38), (W, 38), 1)
         # Ground line
         pygame.draw.line(screen, (255, 69, 0, 80), (0, H - 28), (W, H - 28), 2)
+
+        # Boss announce banner
+        if self.boss_announce > 0:
+            t = self.boss_announce / 120
+            alpha = int(255 * min(t * 4, 1.0))   # fade in fast, fade out slowly
+            glow_text(screen, '🛸  BOSS INCOMING!  🛸', W // 2, H // 2 - 16,
+                      28, (255, 80, 80), (180, 0, 0))
 
     def _draw_overlay(self):
         overlay = pygame.Surface((W, H), pygame.SRCALPHA)
